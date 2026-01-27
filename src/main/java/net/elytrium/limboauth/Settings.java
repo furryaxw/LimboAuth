@@ -28,9 +28,6 @@ import java.util.concurrent.ThreadLocalRandom;
 import net.elytrium.commons.config.ConfigSerializer;
 import net.elytrium.commons.config.YamlConfig;
 import net.elytrium.commons.kyori.serialization.Serializers;
-import net.elytrium.limboapi.api.chunk.Dimension;
-import net.elytrium.limboapi.api.file.BuiltInWorldFileType;
-import net.elytrium.limboapi.api.player.GameMode;
 import net.elytrium.limboauth.command.CommandPermissionState;
 import net.elytrium.limboauth.dependencies.DatabaseLibrary;
 import net.elytrium.limboauth.migration.MigrationHash;
@@ -139,8 +136,7 @@ public class Settings extends YamlConfig {
         "PLAINTEXT - Plain text",
     })
     public MigrationHash MIGRATION_HASH = MigrationHash.AUTHME;
-    @Comment("Available dimensions: OVERWORLD, NETHER, THE_END")
-    public Dimension DIMENSION = Dimension.THE_END;
+
     public long PURGE_CACHE_MILLIS = 3600000;
     public long PURGE_PREMIUM_CACHE_MILLIS = 28800000;
     public long PURGE_BRUTEFORCE_CACHE_MILLIS = 28800000;
@@ -163,25 +159,11 @@ public class Settings extends YamlConfig {
     })
     public String ALLOWED_NICKNAME_REGEX = "^[A-Za-z0-9_]{3,16}$";
 
-    public boolean LOAD_WORLD = false;
-    @Comment({
-        "World file type:",
-        " SCHEMATIC (MCEdit .schematic, 1.12.2 and lower, not recommended)",
-        " STRUCTURE (structure block .nbt, any Minecraft version is supported, but the latest one is recommended).",
-        " WORLDEDIT_SCHEM (WorldEdit .schem, any Minecraft version is supported, but the latest one is recommended)."
-    })
-    public BuiltInWorldFileType WORLD_FILE_TYPE = BuiltInWorldFileType.STRUCTURE;
-    public String WORLD_FILE_PATH = "world.nbt";
-    public boolean DISABLE_FALLING = true;
+    @Comment("The backend servers to use for authentication.")
+    public List<String> AUTH_SERVERS = List.of("auth-lobby");
 
-    @Comment("World time in ticks (24000 ticks == 1 in-game day)")
-    public long WORLD_TICKS = 1000L;
-
-    @Comment("World light level (from 0 to 15)")
-    public int WORLD_LIGHT_LEVEL = 15;
-
-    @Comment("Available: ADVENTURE, CREATIVE, SURVIVAL, SPECTATOR")
-    public GameMode GAME_MODE = GameMode.ADVENTURE;
+    @Comment("The servers to send the player to after logging in.")
+    public List<String> LOBBY_SERVERS = List.of("lobby");
 
     @Comment({
         "Custom isPremium URL",
@@ -256,28 +238,6 @@ public class Settings extends YamlConfig {
       @CustomSerializer(serializerClass = MD5KeySerializer.class)
       public byte[] VERIFY_KEY = null;
 
-    }
-
-    @Create
-    public Settings.MAIN.WORLD_COORDS WORLD_COORDS;
-
-    public static class WORLD_COORDS {
-
-      public int X = 0;
-      public int Y = 0;
-      public int Z = 0;
-    }
-
-    @Create
-    public MAIN.AUTH_COORDS AUTH_COORDS;
-
-    public static class AUTH_COORDS {
-
-      public double X = 0;
-      public double Y = 0;
-      public double Z = 0;
-      public double YAW = 0;
-      public double PITCH = 0;
     }
 
     @Create

@@ -21,7 +21,7 @@ import at.favre.lib.crypto.bcrypt.BCrypt;
 import com.google.common.primitives.Longs;
 import com.j256.ormlite.dao.Dao;
 import com.velocitypowered.api.proxy.Player;
-import com.velocitypowered.proxy.protocol.packet.PluginMessagePacket;
+import com.velocitypowered.api.proxy.server.RegisteredServer;
 import dev.samstevens.totp.code.CodeVerifier;
 import dev.samstevens.totp.code.DefaultCodeGenerator;
 import dev.samstevens.totp.code.DefaultCodeVerifier;
@@ -38,9 +38,6 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import net.elytrium.commons.kyori.serialization.Serializer;
-import net.elytrium.limboapi.api.Limbo;
-import net.elytrium.limboapi.api.LimboSessionHandler;
-import net.elytrium.limboapi.api.player.LimboPlayer;
 import net.elytrium.limboauth.LimboAuth;
 import net.elytrium.limboauth.Settings;
 import net.elytrium.limboauth.event.PostAuthorizationEvent;
@@ -54,7 +51,7 @@ import net.kyori.adventure.text.Component;
 import net.kyori.adventure.title.Title;
 import org.checkerframework.checker.nullness.qual.Nullable;
 
-public class AuthSessionHandler implements LimboSessionHandler {
+public class AuthSessionHandler {
 
   public static final CodeVerifier TOTP_CODE_VERIFIER = new DefaultCodeVerifier(new DefaultCodeGenerator(), new SystemTimeProvider());
   private static final BCrypt.Verifyer HASH_VERIFIER = BCrypt.verifyer();
@@ -110,11 +107,11 @@ public class AuthSessionHandler implements LimboSessionHandler {
 
   private ScheduledFuture<?> authMainTask;
 
-  private LimboPlayer player;
   private int attempts = Settings.IMP.MAIN.LOGIN_ATTEMPTS;
   private boolean totpState;
   private String tempPassword;
   private boolean tokenReceived;
+  private boolean isJoinedAuthServer = false;
 
   public AuthSessionHandler(Dao<RegisteredPlayer, String> playerDao, Player proxyPlayer, LimboAuth plugin, @Nullable RegisteredPlayer playerInfo) {
     this.playerDao = playerDao;
@@ -123,15 +120,10 @@ public class AuthSessionHandler implements LimboSessionHandler {
     this.playerInfo = playerInfo;
   }
 
-  @Override
-  public void onSpawn(Limbo server, LimboPlayer player) {
-    this.player = player;
-
-    if (Settings.IMP.MAIN.DISABLE_FALLING) {
-      this.player.disableFalling();
-    } else {
-      this.player.enableFalling();
-    }
+  // Called via VelocityAuthListener when player enters the Auth Server
+  public void onJoinAuthServer() {
+    if (isJoinedAuthServer) return;
+    isJoinedAuthServer = true;
 
     Serializer serializer = LimboAuth.getSerializer();
 
@@ -167,14 +159,14 @@ public class AuthSessionHandler implements LimboSessionHandler {
         );
         return;
       }
-
-      this.plugin.addAuthenticatingPlayer(player.getProxyPlayer().getUsername(), this);
     }
 
     boolean bossBarEnabled = !this.loginOnlyByMod && Settings.IMP.MAIN.ENABLE_BOSSBAR;
     int authTime = Settings.IMP.MAIN.AUTH_TIME;
     float multiplier = 1000.0F / authTime;
-    this.authMainTask = this.player.getScheduledExecutor().scheduleWithFixedDelay(() -> {
+
+    // Using plugin scheduler
+    this.authMainTask = (ScheduledFuture<?>) this.plugin.getServer().getScheduler().buildTask(this.plugin, () -> {
       if (System.currentTimeMillis() - this.joinTime > authTime) {
         this.proxyPlayer.disconnect(timesUp);
       } else {
@@ -185,7 +177,7 @@ public class AuthSessionHandler implements LimboSessionHandler {
           this.bossBar.progress(Math.min(1.0F, secondsLeft * multiplier));
         }
       }
-    }, 0, 1, TimeUnit.SECONDS);
+    }).repeat(1, TimeUnit.SECONDS).schedule();
 
     if (bossBarEnabled) {
       this.proxyPlayer.showBossBar(this.bossBar);
@@ -196,8 +188,7 @@ public class AuthSessionHandler implements LimboSessionHandler {
     }
   }
 
-  @Override
-  public void onChat(String message) {
+  public void handleChat(String message) {
     if (this.loginOnlyByMod) {
       return;
     }
@@ -230,7 +221,7 @@ public class AuthSessionHandler implements LimboSessionHandler {
           }
 
           this.plugin.getServer().getEventManager()
-              .fire(new PostRegisterEvent(this::finishAuth, this.player, this.playerInfo, this.tempPassword))
+              .fire(new PostRegisterEvent(this::finishAuth, this.proxyPlayer, this.playerInfo, this.tempPassword))
               .thenAcceptAsync(this::finishAuth);
         }
 
@@ -271,19 +262,7 @@ public class AuthSessionHandler implements LimboSessionHandler {
     this.sendMessage(false);
   }
 
-  @Override
-  public void onGeneric(Object packet) {
-    if (Settings.IMP.MAIN.MOD.ENABLED && packet instanceof PluginMessagePacket) {
-      PluginMessagePacket pluginMessage = (PluginMessagePacket) packet;
-      String channel = pluginMessage.getChannel();
-
-      if (channel.equals("MC|Brand") || channel.equals("minecraft:brand")) {
-        // Minecraft can't handle the plugin message immediately after going to the PLAY
-        // state, so we have to postpone sending it
-        if (Settings.IMP.MAIN.MOD.ENABLED) {
-          this.proxyPlayer.sendPluginMessage(this.plugin.getChannelIdentifier(this.proxyPlayer), new byte[0]);
-        }
-      } else if (channel.equals(this.plugin.getChannelIdentifier(this.proxyPlayer).getId())) {
+  public void handlePluginMessage(ByteBuf data) {
         if (this.tokenReceived) {
           this.checkBruteforceAttempts();
           this.proxyPlayer.disconnect(Component.empty());
@@ -295,8 +274,6 @@ public class AuthSessionHandler implements LimboSessionHandler {
         if (this.playerInfo == null) {
           return;
         }
-
-        ByteBuf data = pluginMessage.content();
 
         if (data.readableBytes() < 16) {
           this.checkBruteforceAttempts();
@@ -325,8 +302,6 @@ public class AuthSessionHandler implements LimboSessionHandler {
         }
 
         this.finishAuth();
-      }
-    }
   }
 
   private void checkBruteforceAttempts() {
@@ -340,14 +315,13 @@ public class AuthSessionHandler implements LimboSessionHandler {
     this.tempPassword = password;
   }
 
-  @Override
   public void onDisconnect() {
     if (this.authMainTask != null) {
       this.authMainTask.cancel(true);
     }
 
     this.proxyPlayer.hideBossBar(this.bossBar);
-    this.plugin.removeAuthenticatingPlayer(this.player.getProxyPlayer().getUsername());
+    this.plugin.removeAuthenticatingPlayer(this.proxyPlayer.getUsername());
   }
 
   private void sendMessage(boolean sendTitle) {
@@ -417,7 +391,7 @@ public class AuthSessionHandler implements LimboSessionHandler {
     this.plugin.clearBruteforceAttempts(this.proxyPlayer.getRemoteAddress().getAddress());
 
     this.plugin.getServer().getEventManager()
-        .fire(new PostAuthorizationEvent(this::finishAuth, this.player, this.playerInfo, this.tempPassword))
+        .fire(new PostAuthorizationEvent(this::finishAuth, this.proxyPlayer, this.playerInfo, this.tempPassword))
         .thenAcceptAsync(this::finishAuth);
   }
 
@@ -446,7 +420,13 @@ public class AuthSessionHandler implements LimboSessionHandler {
     }
 
     this.plugin.cacheAuthUser(this.proxyPlayer);
-    this.player.disconnect();
+    this.onDisconnect(); // Cleanup task and remove from auth map
+
+    // Redirect to Lobby
+    RegisteredServer lobby = this.plugin.getLobbyServer();
+    if (lobby != null) {
+        this.proxyPlayer.createConnectionRequest(lobby).connect();
+    }
   }
 
   public static void reload() {

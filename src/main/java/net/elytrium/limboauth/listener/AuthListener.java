@@ -25,7 +25,9 @@ import com.velocitypowered.api.event.connection.PostLoginEvent;
 import com.velocitypowered.api.event.connection.PreLoginEvent;
 import com.velocitypowered.api.event.connection.PreLoginEvent.PreLoginComponentResult;
 import com.velocitypowered.api.event.player.GameProfileRequestEvent;
+import com.velocitypowered.api.event.player.PlayerChooseInitialServerEvent;
 import com.velocitypowered.api.proxy.InboundConnection;
+import com.velocitypowered.api.proxy.server.RegisteredServer;
 import com.velocitypowered.api.util.UuidUtils;
 import com.velocitypowered.proxy.connection.MinecraftConnection;
 import com.velocitypowered.proxy.connection.client.InitialInboundConnection;
@@ -37,7 +39,6 @@ import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import net.elytrium.commons.utils.reflection.ReflectionException;
-import net.elytrium.limboapi.api.event.LoginLimboRegisterEvent;
 import net.elytrium.limboauth.LimboAuth;
 import net.elytrium.limboauth.LimboAuth.CachedPremiumUser;
 import net.elytrium.limboauth.LimboAuth.PremiumState;
@@ -48,7 +49,6 @@ import net.elytrium.limboauth.model.RegisteredPlayer;
 import net.elytrium.limboauth.model.SQLRuntimeException;
 import net.kyori.adventure.text.Component;
 
-// TODO: Customizable events priority
 public class AuthListener {
 
   private static final MethodHandle DELEGATE_FIELD;
@@ -130,30 +130,30 @@ public class AuthListener {
     return initialInbound.getConnection();
   }
 
-  // Temporarily disabled because some clients send UUID version 4 (random UUID) even if the player is cracked
-  /*
-  private boolean isPremiumByIdentifiedKey(InboundConnection inbound) throws Throwable {
-    LoginInboundConnection inboundConnection = (LoginInboundConnection) inbound;
-    InitialInboundConnection initialInbound = (InitialInboundConnection) DELEGATE_FIELD.invokeExact(inboundConnection);
-    MinecraftConnection connection = initialInbound.getConnection();
-    InitialLoginSessionHandler handler = (InitialLoginSessionHandler) connection.getSessionHandler();
-
-    ServerLogin packet = (ServerLogin) LOGIN_FIELD.invokeExact(handler);
-    if (packet == null) {
-      return false;
-    }
-
-    UUID holder = packet.getHolderUuid();
-    if (holder == null) {
-      return false;
-    }
-
-    return holder.version() != 3;
+  // 拦截玩家的初始服务器选择
+  @Subscribe(order = PostOrder.FIRST)
+  public void onPlayerChooseInitialServer(PlayerChooseInitialServerEvent event) {
+      if (this.plugin.needAuth(event.getPlayer())) {
+          // 如果需要验证，强制将初始服务器设置为 Auth 服
+          RegisteredServer authServer = this.plugin.getAuthServer(event.getPlayer());
+          if (authServer != null) {
+              event.setInitialServer(authServer);
+          }
+      }
   }
-  */
 
   @Subscribe
   public void onPostLogin(PostLoginEvent event) {
+    // 1. Handle Online Mode Premium Cache logic (Previously in onLoginLimboRegister)
+    if (event.getPlayer().isOnlineMode()) {
+      CachedPremiumUser premiumUser = this.plugin.getPremiumCache(event.getPlayer().getUsername());
+      if (premiumUser != null) {
+        premiumUser.setForcePremium(true);
+      }
+      this.plugin.getPendingLogins().remove(event.getPlayer().getUsername());
+    }
+
+    // 2. Handle Post Login Tasks (Delayed messages etc.)
     UUID uuid = event.getPlayer().getUniqueId();
     Runnable postLoginTask = this.plugin.getPostLoginTasks().remove(uuid);
     if (postLoginTask != null) {
@@ -163,22 +163,11 @@ public class AuthListener {
           .delay(Settings.IMP.MAIN.PREMIUM_AND_FLOODGATE_MESSAGES_DELAY, TimeUnit.MILLISECONDS)
           .schedule();
     }
-  }
 
-  @Subscribe
-  public void onLoginLimboRegister(LoginLimboRegisterEvent event) {
-    // Player has completed online-mode authentication, can be sure that the player has premium account
-    if (event.getPlayer().isOnlineMode()) {
-      CachedPremiumUser premiumUser = this.plugin.getPremiumCache(event.getPlayer().getUsername());
-      if (premiumUser != null) {
-        premiumUser.setForcePremium(true);
-      }
-
-      this.plugin.getPendingLogins().remove(event.getPlayer().getUsername());
-    }
-
+    // 3. Trigger Authentication Logic
+    // If auth is needed, this will eventually route the player to the Auth Server
     if (this.plugin.needAuth(event.getPlayer())) {
-      event.addOnJoinCallback(() -> this.plugin.authPlayer(event.getPlayer()));
+        this.plugin.authPlayer(event.getPlayer());
     }
   }
 

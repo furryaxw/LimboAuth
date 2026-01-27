@@ -17,17 +17,17 @@
 
 package net.elytrium.limboauth.event;
 
+import com.velocitypowered.api.proxy.Player;
 import java.util.function.Consumer;
-import net.elytrium.limboapi.api.player.LimboPlayer;
 import net.elytrium.limboauth.model.RegisteredPlayer;
 
 public abstract class PostEvent extends TaskEvent {
 
-  private final LimboPlayer player;
+  private final Player player;
   private final RegisteredPlayer playerInfo;
   private final String password;
 
-  protected PostEvent(Consumer<TaskEvent> onComplete, LimboPlayer player, RegisteredPlayer playerInfo, String password) {
+  protected PostEvent(Consumer<TaskEvent> onComplete, Player player, RegisteredPlayer playerInfo, String password) {
     super(onComplete);
 
     this.player = player;
@@ -35,7 +35,7 @@ public abstract class PostEvent extends TaskEvent {
     this.password = password;
   }
 
-  protected PostEvent(Consumer<TaskEvent> onComplete, Result result, LimboPlayer player, RegisteredPlayer playerInfo, String password) {
+  protected PostEvent(Consumer<TaskEvent> onComplete, Result result, Player player, RegisteredPlayer playerInfo, String password) {
     super(onComplete, result);
 
     this.player = player;
@@ -43,7 +43,7 @@ public abstract class PostEvent extends TaskEvent {
     this.password = password;
   }
 
-  public LimboPlayer getPlayer() {
+  public Player getPlayer() {
     return this.player;
   }
 

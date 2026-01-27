@@ -47,6 +47,7 @@ import com.velocitypowered.api.proxy.ProxyServer;
 import com.velocitypowered.api.proxy.messages.ChannelIdentifier;
 import com.velocitypowered.api.proxy.messages.LegacyChannelIdentifier;
 import com.velocitypowered.api.proxy.messages.MinecraftChannelIdentifier;
+import com.velocitypowered.api.proxy.server.RegisteredServer;
 import com.velocitypowered.api.scheduler.ScheduledTask;
 import com.velocitypowered.proxy.util.ratelimit.Ratelimiter;
 import com.velocitypowered.proxy.util.ratelimit.Ratelimiters;
@@ -85,21 +86,7 @@ import net.elytrium.commons.kyori.serialization.Serializer;
 import net.elytrium.commons.kyori.serialization.Serializers;
 import net.elytrium.commons.utils.reflection.ReflectionException;
 import net.elytrium.commons.utils.updates.UpdatesChecker;
-import net.elytrium.limboapi.api.Limbo;
-import net.elytrium.limboapi.api.LimboFactory;
-import net.elytrium.limboapi.api.chunk.VirtualWorld;
-import net.elytrium.limboapi.api.command.LimboCommandMeta;
-import net.elytrium.limboapi.api.file.WorldFile;
-import net.elytrium.limboauth.command.ChangePasswordCommand;
-import net.elytrium.limboauth.command.DestroySessionCommand;
-import net.elytrium.limboauth.command.ForceChangePasswordCommand;
-import net.elytrium.limboauth.command.ForceLoginCommand;
-import net.elytrium.limboauth.command.ForceRegisterCommand;
-import net.elytrium.limboauth.command.ForceUnregisterCommand;
-import net.elytrium.limboauth.command.LimboAuthCommand;
-import net.elytrium.limboauth.command.PremiumCommand;
-import net.elytrium.limboauth.command.TotpCommand;
-import net.elytrium.limboauth.command.UnregisterCommand;
+import net.elytrium.limboauth.command.*;
 import net.elytrium.limboauth.dependencies.DatabaseLibrary;
 import net.elytrium.limboauth.event.AuthPluginReloadEvent;
 import net.elytrium.limboauth.event.PreAuthorizationEvent;
@@ -108,6 +95,7 @@ import net.elytrium.limboauth.event.PreRegisterEvent;
 import net.elytrium.limboauth.event.TaskEvent;
 import net.elytrium.limboauth.floodgate.FloodgateApiHolder;
 import net.elytrium.limboauth.handler.AuthSessionHandler;
+import net.elytrium.limboauth.listener.AuthInteractionListener;
 import net.elytrium.limboauth.listener.AuthListener;
 import net.elytrium.limboauth.listener.BackendEndpointsListener;
 import net.elytrium.limboauth.model.RegisteredPlayer;
@@ -131,7 +119,6 @@ import org.slf4j.Logger;
         "Elytrium (https://elytrium.net/)",
     },
     dependencies = {
-        @Dependency(id = "limboapi"),
         @Dependency(id = "floodgate", optional = true)
     }
 )
@@ -147,6 +134,8 @@ public class LimboAuth {
   private static Logger LOGGER;
   @MonotonicNonNull
   private static Serializer SERIALIZER;
+  @MonotonicNonNull
+  private static LimboAuth INSTANCE;
 
   private final Map<String, CachedSessionUser> cachedAuthChecks = new ConcurrentHashMap<>();
   private final Map<String, CachedPremiumUser> premiumCache = new ConcurrentHashMap<>();
@@ -163,7 +152,6 @@ public class LimboAuth {
   private final Path dataDirectory;
   private final File dataDirectoryFile;
   private final File configFile;
-  private final LimboFactory factory;
   private final FloodgateApiHolder floodgateApi;
   private final Map<String, AuthSessionHandler> authenticatingPlayers;
 
@@ -186,10 +174,10 @@ public class LimboAuth {
   private ConnectionSource connectionSource;
   private Dao<RegisteredPlayer, String> playerDao;
   private Pattern nicknameValidationPattern;
-  private Limbo authServer;
 
   @Inject
   public LimboAuth(Logger logger, ProxyServer server, Metrics.Factory metricsFactory, @DataDirectory Path dataDirectory) {
+    INSTANCE = this;
     setLogger(logger);
 
     this.server = server;
@@ -200,7 +188,6 @@ public class LimboAuth {
     this.configFile = new File(this.dataDirectoryFile, "config.yml");
 
     this.authenticatingPlayers = new ConcurrentHashMap<>();
-    this.factory = (LimboFactory) this.server.getPluginManager().getPlugin("limboapi").flatMap(PluginContainer::getInstance).orElseThrow();
 
     if (this.server.getPluginManager().getPlugin("floodgate").isPresent()) {
       this.floodgateApi = new FloodgateApiHolder();
@@ -224,9 +211,7 @@ public class LimboAuth {
     metrics.addCustomChart(new SimplePie("floodgate_auth", () -> String.valueOf(Settings.IMP.MAIN.FLOODGATE_NEED_AUTH)));
     metrics.addCustomChart(new SimplePie("premium_auth", () -> String.valueOf(Settings.IMP.MAIN.ONLINE_MODE_NEED_AUTH)));
     metrics.addCustomChart(new SimplePie("db_type", () -> String.valueOf(Settings.IMP.DATABASE.STORAGE_TYPE)));
-    metrics.addCustomChart(new SimplePie("load_world", () -> String.valueOf(Settings.IMP.MAIN.LOAD_WORLD)));
     metrics.addCustomChart(new SimplePie("totp_enabled", () -> String.valueOf(Settings.IMP.MAIN.ENABLE_TOTP)));
-    metrics.addCustomChart(new SimplePie("dimension", () -> String.valueOf(Settings.IMP.MAIN.DIMENSION)));
     metrics.addCustomChart(new SimplePie("save_uuid", () -> String.valueOf(Settings.IMP.MAIN.SAVE_UUID)));
     metrics.addCustomChart(new SingleLineChart("registered_players", () -> Math.toIntExact(this.playerDao.countOf())));
 
@@ -349,6 +334,7 @@ public class LimboAuth {
     }
 
     CommandManager manager = this.server.getCommandManager();
+    // 清理旧指令
     manager.unregister("unregister");
     manager.unregister("forceregister");
     manager.unregister("forcelogin");
@@ -360,6 +346,12 @@ public class LimboAuth {
     manager.unregister("2fa");
     manager.unregister("limboauth");
 
+    // 清理 Auth 指令 (防止重载时重复)
+    Settings.IMP.MAIN.REGISTER_COMMAND.forEach(cmd -> manager.unregister(cmd.replace("/", "")));
+    Settings.IMP.MAIN.LOGIN_COMMAND.forEach(cmd -> manager.unregister(cmd.replace("/", "")));
+    Settings.IMP.MAIN.TOTP_COMMAND.forEach(cmd -> manager.unregister(cmd.replace("/", "")));
+
+    // 注册管理指令 (保持不变)
     manager.register("unregister", new UnregisterCommand(this, this.playerDao), "unreg");
     manager.register("forceregister", new ForceRegisterCommand(this, this.playerDao), "forcereg");
     manager.register("forcelogin", new ForceLoginCommand(this));
@@ -368,49 +360,32 @@ public class LimboAuth {
     manager.register("changepassword", new ChangePasswordCommand(this, this.playerDao), "changepass", "cp");
     manager.register("forcechangepassword", new ForceChangePasswordCommand(this, this.server, this.playerDao), "forcechangepass", "fcp");
     manager.register("destroysession", new DestroySessionCommand(this), "logout");
-    if (Settings.IMP.MAIN.ENABLE_TOTP) {
-      manager.register("2fa", new TotpCommand(this.playerDao), "totp");
-    }
+
     manager.register("limboauth", new LimboAuthCommand(this), "la", "auth", "lauth");
 
-    Settings.MAIN.AUTH_COORDS authCoords = Settings.IMP.MAIN.AUTH_COORDS;
-    VirtualWorld authWorld = this.factory.createVirtualWorld(
-        Settings.IMP.MAIN.DIMENSION,
-        authCoords.X, authCoords.Y, authCoords.Z,
-        (float) authCoords.YAW, (float) authCoords.PITCH
-    );
-
-    if (Settings.IMP.MAIN.LOAD_WORLD) {
-      try {
-        Path path = this.dataDirectory.resolve(Settings.IMP.MAIN.WORLD_FILE_PATH);
-        WorldFile file = this.factory.openWorldFile(Settings.IMP.MAIN.WORLD_FILE_TYPE, path);
-
-        Settings.MAIN.WORLD_COORDS coords = Settings.IMP.MAIN.WORLD_COORDS;
-        file.toWorld(this.factory, authWorld, coords.X, coords.Y, coords.Z, Settings.IMP.MAIN.WORLD_LIGHT_LEVEL);
-      } catch (IOException e) {
-        throw new IllegalArgumentException(e);
-      }
+    // [新增] 注册 Auth 指令 (Login, Register, 2FA) 到 Velocity
+    // 这样客户端就能看到指令，且不会报 Unknown command
+    for (String cmd : Settings.IMP.MAIN.REGISTER_COMMAND) {
+        String name = cmd.replace("/", "");
+        manager.register(name, new AuthCommand(this, name));
     }
-
-    if (this.authServer != null) {
-      this.authServer.dispose();
+    for (String cmd : Settings.IMP.MAIN.LOGIN_COMMAND) {
+        String name = cmd.replace("/", "");
+        manager.register(name, new AuthCommand(this, name));
     }
-
-    this.authServer = this.factory
-        .createLimbo(authWorld)
-        .setName("LimboAuth")
-        .setWorldTime(Settings.IMP.MAIN.WORLD_TICKS)
-        .setGameMode(Settings.IMP.MAIN.GAME_MODE)
-        .registerCommand(new LimboCommandMeta(this.filterCommands(Settings.IMP.MAIN.REGISTER_COMMAND)))
-        .registerCommand(new LimboCommandMeta(this.filterCommands(Settings.IMP.MAIN.LOGIN_COMMAND)));
 
     if (Settings.IMP.MAIN.ENABLE_TOTP) {
-      this.authServer.registerCommand(new LimboCommandMeta(this.filterCommands(Settings.IMP.MAIN.TOTP_COMMAND)));
+        for (String cmd : Settings.IMP.MAIN.TOTP_COMMAND) {
+             String name = cmd.replace("/", "");
+             manager.register(name, new AuthCommand(this, name));
+        }
     }
 
     EventManager eventManager = this.server.getEventManager();
     eventManager.unregisterListeners(this);
     eventManager.register(this, new AuthListener(this, this.playerDao, this.floodgateApi));
+    eventManager.register(this, new AuthInteractionListener(this)); // Register the new listener
+
     if (Settings.IMP.MAIN.BACKEND_API.ENABLED) {
       eventManager.register(this, new BackendEndpointsListener(this));
     } else {
@@ -638,10 +613,10 @@ public class LimboAuth {
       }
 
       Consumer<TaskEvent> eventConsumer = (event) -> this.sendPlayer(event, null);
-      eventManager.fire(new PreRegisterEvent(eventConsumer, result, player)).thenAcceptAsync(eventConsumer);
+      eventManager.fire(new PreRegisterEvent(eventConsumer, result, player)).thenAccept(eventConsumer);
     } else {
       Consumer<TaskEvent> eventConsumer = (event) -> this.sendPlayer(event, ((PreAuthorizationEvent) event).getPlayerInfo());
-      eventManager.fire(new PreAuthorizationEvent(eventConsumer, result, player, registeredPlayer)).thenAcceptAsync(eventConsumer);
+      eventManager.fire(new PreAuthorizationEvent(eventConsumer, result, player, registeredPlayer)).thenAccept(eventConsumer);
     }
   }
 
@@ -658,7 +633,11 @@ public class LimboAuth {
             throw new SQLRuntimeException(e);
           }
         } finally {
-          this.factory.passLoginLimbo(player);
+            // Logic to move player to lobby if they are currently on auth server
+            RegisteredServer lobby = getLobbyServer();
+            if (lobby != null) {
+                player.createConnectionRequest(lobby).connect();
+            }
         }
         break;
       }
@@ -671,10 +650,50 @@ public class LimboAuth {
       }
       case NORMAL:
       default: {
-        this.authServer.spawnPlayer(player, new AuthSessionHandler(this.playerDao, player, this, registeredPlayer));
+        AuthSessionHandler handler = new AuthSessionHandler(this.playerDao, player, this, registeredPlayer);
+        this.addAuthenticatingPlayer(player.getUsername(), handler);
+
+        // [关键修复] 只有当玩家不在 Auth 服时才尝试连接
+        // 因为我们现在在 PlayerChooseInitialServerEvent 中已经设置了初始服
+        // 所以这里通常不需要连接，只需要初始化 Handler
+        RegisteredServer authServer = getAuthServer(player);
+        if (authServer != null) {
+            // 安全地检查当前服务器
+            String currentServerName = player.getCurrentServer()
+                .map(s -> s.getServerInfo().getName())
+                .orElse("");
+
+            if (!currentServerName.equals(authServer.getServerInfo().getName())) {
+                 // 只有确实不在 Auth 服（且不是正在连接中）才跳转
+                 // 防止 "already trying to connect"
+                 player.createConnectionRequest(authServer).connect();
+            } else {
+                 // 已经在 Auth 服了 (通过 InitialServerEvent)，手动触发 handler 初始化
+                 handler.onJoinAuthServer();
+            }
+        }
         break;
       }
     }
+  }
+
+  public RegisteredServer getAuthServer(Player player) {
+      // Basic load balancing or selection logic could go here.
+      // For now, pick the first available one.
+      for (String serverName : Settings.IMP.MAIN.AUTH_SERVERS) {
+          RegisteredServer rs = server.getServer(serverName).orElse(null);
+          if (rs != null) return rs;
+      }
+      LOGGER.error("No valid Auth Server found! Check config.yml.");
+      return null;
+  }
+
+  public RegisteredServer getLobbyServer() {
+      for (String serverName : Settings.IMP.MAIN.LOBBY_SERVERS) {
+          RegisteredServer rs = server.getServer(serverName).orElse(null);
+          if (rs != null) return rs;
+      }
+      return null;
   }
 
   public void updateLoginData(Player player) throws SQLException {
@@ -971,10 +990,6 @@ public class LimboAuth {
     return SERIALIZER;
   }
 
-  public Limbo getAuthServer() {
-    return this.authServer;
-  }
-
   public Pattern getNicknameValidationPattern() {
     return this.nicknameValidationPattern;
   }
@@ -989,6 +1004,10 @@ public class LimboAuth {
 
   public AuthSessionHandler getAuthenticatingPlayer(String nickname) {
     return this.authenticatingPlayers.get(nickname);
+  }
+
+  public static LimboAuth getInstance() {
+      return INSTANCE;
   }
 
   public Map<String, AuthSessionHandler> getAuthenticatingPlayers() {
