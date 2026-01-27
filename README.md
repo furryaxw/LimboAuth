@@ -1,3 +1,9 @@
+# 注意，这是一个修改版LimboAuth
+### 该版本删除了对limbo api的依赖，使用一个额外的服务器代替，用于兼容ViaVersion。
+使用Gemini3Pro进行代码修改，可能存在大量问题
+
+---
+
 <img src="https://elytrium.net/src/img/elytrium.webp" alt="Elytrium" align="right">
 
 # LimboAuth
