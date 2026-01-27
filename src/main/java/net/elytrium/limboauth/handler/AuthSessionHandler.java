@@ -22,6 +22,7 @@ import com.google.common.primitives.Longs;
 import com.j256.ormlite.dao.Dao;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.server.RegisteredServer;
+import com.velocitypowered.api.scheduler.ScheduledTask;
 import dev.samstevens.totp.code.CodeVerifier;
 import dev.samstevens.totp.code.DefaultCodeGenerator;
 import dev.samstevens.totp.code.DefaultCodeVerifier;
@@ -34,7 +35,6 @@ import java.text.MessageFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
-import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import net.elytrium.commons.kyori.serialization.Serializer;
@@ -105,7 +105,8 @@ public class AuthSessionHandler {
   @Nullable
   private RegisteredPlayer playerInfo;
 
-  private ScheduledFuture<?> authMainTask;
+  // [修复] 将 ScheduledFuture<?> 改为 ScheduledTask
+  private ScheduledTask authMainTask;
 
   private int attempts = Settings.IMP.MAIN.LOGIN_ATTEMPTS;
   private boolean totpState;
@@ -165,8 +166,8 @@ public class AuthSessionHandler {
     int authTime = Settings.IMP.MAIN.AUTH_TIME;
     float multiplier = 1000.0F / authTime;
 
-    // Using plugin scheduler
-    this.authMainTask = (ScheduledFuture<?>) this.plugin.getServer().getScheduler().buildTask(this.plugin, () -> {
+    // [修复] 移除强制转换 (ScheduledFuture<?>)，Velocity 返回的是 ScheduledTask
+    this.authMainTask = this.plugin.getServer().getScheduler().buildTask(this.plugin, () -> {
       if (System.currentTimeMillis() - this.joinTime > authTime) {
         this.proxyPlayer.disconnect(timesUp);
       } else {
@@ -316,8 +317,9 @@ public class AuthSessionHandler {
   }
 
   public void onDisconnect() {
+    // [修复] 使用正确的 cancel() 方法，ScheduledTask.cancel() 没有参数
     if (this.authMainTask != null) {
-      this.authMainTask.cancel(true);
+      this.authMainTask.cancel();
     }
 
     this.proxyPlayer.hideBossBar(this.bossBar);

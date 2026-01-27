@@ -633,9 +633,11 @@ public class LimboAuth {
             throw new SQLRuntimeException(e);
           }
         } finally {
-            // Logic to move player to lobby if they are currently on auth server
+            // [修复] BYPASS 状态下（如已登录），如果初始服被设为了 Auth，需要手动切回 Lobby
             RegisteredServer lobby = getLobbyServer();
             if (lobby != null) {
+                // 只有当玩家当前不在 Lobby 且没有在连接中时才跳转
+                // 简单处理：BYPASS 通常意味着自动登录，直接连 Lobby 即可
                 player.createConnectionRequest(lobby).connect();
             }
         }
@@ -653,23 +655,32 @@ public class LimboAuth {
         AuthSessionHandler handler = new AuthSessionHandler(this.playerDao, player, this, registeredPlayer);
         this.addAuthenticatingPlayer(player.getUsername(), handler);
 
-        // [关键修复] 只有当玩家不在 Auth 服时才尝试连接
-        // 因为我们现在在 PlayerChooseInitialServerEvent 中已经设置了初始服
-        // 所以这里通常不需要连接，只需要初始化 Handler
         RegisteredServer authServer = getAuthServer(player);
         if (authServer != null) {
-            // 安全地检查当前服务器
-            String currentServerName = player.getCurrentServer()
-                .map(s -> s.getServerInfo().getName())
-                .orElse("");
+            boolean hasCurrentServer = player.getCurrentServer().isPresent();
 
-            if (!currentServerName.equals(authServer.getServerInfo().getName())) {
-                 // 只有确实不在 Auth 服（且不是正在连接中）才跳转
-                 // 防止 "already trying to connect"
-                 player.createConnectionRequest(authServer).connect();
+            if (!hasCurrentServer) {
+                 // 情况 1: 初次进服
+                 // 不直接 connect (防止报错 "already trying to connect")
+                 // 也不直接调用 onJoinAuthServer (防止 Title 被进服包冲掉)
+                 // 而是：延迟 1 秒后执行 UI 初始化。
+                 // 这样确保玩家已经完全进入 NanoLimbo 后端，再显示标题和血条。
+                 this.server.getScheduler()
+                     .buildTask(this, handler::onJoinAuthServer)
+                     .delay(1000, TimeUnit.MILLISECONDS) // 延迟1秒 (可根据网络情况调整为 500-1500ms)
+                     .schedule();
+
             } else {
-                 // 已经在 Auth 服了 (通过 InitialServerEvent)，手动触发 handler 初始化
-                 handler.onJoinAuthServer();
+                 // 情况 2: 从其他服跳转过来
+                 String currentServerName = player.getCurrentServer().get().getServerInfo().getName();
+
+                 if (!currentServerName.equals(authServer.getServerInfo().getName())) {
+                      player.createConnectionRequest(authServer).connect();
+                      // 跳转完成后，AuthInteractionListener 会接管 UI
+                 } else {
+                      // 已经在 Auth 服，立即显示
+                      handler.onJoinAuthServer();
+                 }
             }
         }
         break;

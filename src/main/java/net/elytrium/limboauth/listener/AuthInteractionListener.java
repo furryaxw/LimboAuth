@@ -46,15 +46,16 @@ public class AuthInteractionListener {
         Player player = event.getPlayer();
         AuthSessionHandler handler = plugin.getAuthenticatingPlayer(player.getUsername());
 
-        // Fix: getPreviousServer() check ensures this is the initial connection or a switch
-        // We only care if they are still logging in (handler != null)
-        if (handler != null && event.getPreviousServer() == null) {
-             // Fix: Extract RegisteredServer from ServerConnection safely
+        // [修改] 移除了 "&& event.getPreviousServer() == null"
+        // 只要玩家处于验证状态 (handler != null)，无论是刚进服还是切服过来，都尝试显示 UI
+        if (handler != null) {
              RegisteredServer currentServer = player.getCurrentServer()
                  .map(ServerConnection::getServer)
                  .orElse(null);
 
              if (isAuthServer(currentServer)) {
+                 // 这里会发送 Title。
+                 // 因为是在 PostConnect 触发，此时世界已加载完成，Title 不会被清除。
                  handler.onJoinAuthServer();
              }
         }
