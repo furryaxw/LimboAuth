@@ -21,6 +21,7 @@ import com.j256.ormlite.dao.Dao;
 import com.j256.ormlite.stmt.UpdateBuilder;
 import com.velocitypowered.api.event.PostOrder;
 import com.velocitypowered.api.event.Subscribe;
+import com.velocitypowered.api.event.connection.DisconnectEvent;
 import com.velocitypowered.api.event.connection.PostLoginEvent;
 import com.velocitypowered.api.event.connection.PreLoginEvent;
 import com.velocitypowered.api.event.connection.PreLoginEvent.PreLoginComponentResult;
@@ -65,6 +66,18 @@ public class AuthListener {
     this.floodgateApi = floodgateApi;
 
     this.errorOccurred = LimboAuth.getSerializer().deserialize(Settings.IMP.MAIN.STRINGS.ERROR_OCCURRED);
+  }
+
+  // 监听玩家断开连接，清理验证会话
+  @Subscribe
+  public void onDisconnect(DisconnectEvent event) {
+    String username = event.getPlayer().getUsername();
+    // 获取该玩家的验证处理器
+    AuthSessionHandler handler = this.plugin.getAuthenticatingPlayer(username);
+    if (handler != null) {
+      // 调用 onDisconnect 方法：取消定时任务、移除BossBar、从Map中移除
+      handler.onDisconnect();
+    }
   }
 
   @Subscribe(order = PostOrder.LATE)
