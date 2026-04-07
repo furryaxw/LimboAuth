@@ -169,6 +169,11 @@ public class AuthSessionHandler {
     // [修复] 移除强制转换 (ScheduledFuture<?>)，Velocity 返回的是 ScheduledTask
     this.authMainTask = this.plugin.getServer().getScheduler().buildTask(this.plugin, () -> {
       if (System.currentTimeMillis() - this.joinTime > authTime) {
+        // [修复] 必须在发起断开请求前，主动同步终止当前定时任务并清理内存队列
+        // 这会执行 authMainTask.cancel()、hideBossBar 以及 removeAuthenticatingPlayer
+        this.onDisconnect();
+
+        // 随后再将断开数据包推入网络队列
         this.proxyPlayer.disconnect(timesUp);
       } else {
         if (bossBarEnabled) {
